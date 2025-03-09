@@ -5,6 +5,9 @@ import argparse
 from pathlib import Path
 from datetime import datetime, timedelta
 from tqdm import tqdm
+import librosa
+import soundfile as sf
+import numpy as np
 from src.inference import Inference
 
 def get_default_model_path():
@@ -21,6 +24,81 @@ def format_progress(desc, current, total, elapsed_time, extra_info=""):
     percentage = (current / total) * 100 if total > 0 else 0
     speed = current / elapsed_time if elapsed_time > 0 else 0
     return f"{desc}: {percentage:.1f}% [{current}/{total}] - {format_time(elapsed_time)} elapsed - {speed:.2f} units/s {extra_info}"
+
+def split_wav_channels(wav_file: Path) -> list:
+    """
+    Split a multi-channel WAV file into separate mono files.
+    
+    Args:
+        wav_file (Path): Path to the multi-channel WAV file
+        
+    Returns:
+        list: List of (channel_number, channel_path, channel_id) tuples
+    """
+    # Parse the filename to get timestamp and channel IDs
+    filename = wav_file.stem
+    parts = filename.split('-')
+    if len(parts) < 2:  # Need at least timestamp and one channel
+        print(f"Warning: Unexpected filename format: {filename}")
+        return []
+        
+    timestamp = parts[0]
+    channel_ids = parts[1:]  # List of channel IDs
+    
+    # Create temporary directory for split files if it doesn't exist
+    temp_dir = wav_file.parent / "temp_channels"
+    temp_dir.mkdir(exist_ok=True)
+    
+    channel_files = []
+    existing_channels = []
+    missing_channels = []
+    
+    # First check which channels already exist
+    for i, channel_id in enumerate(channel_ids):
+        channel_filename = f"{timestamp}-{channel_id}.wav"
+        channel_path = temp_dir / channel_filename
+        if channel_path.exists():
+            channel_files.append((i, channel_path, channel_id))
+            existing_channels.append(channel_id)
+        else:
+            missing_channels.append((i, channel_id))
+    
+    # If all channels exist, return them
+    if len(existing_channels) == len(channel_ids):
+        print(f"All channel files already exist for {wav_file.name}")
+        return channel_files
+    
+    # If some channels are missing, we need to read and split the audio
+    print(f"Splitting channels for {wav_file.name} (missing: {[id for _, id in missing_channels]})")
+    
+    # Read the multi-channel audio
+    audio, sr = librosa.load(wav_file, sr=None, mono=False)
+    if len(audio.shape) == 1:
+        audio = audio.reshape(1, -1)  # Convert mono to shape (1, samples)
+    
+    # Verify we have enough channels in the audio file
+    if audio.shape[0] < len(channel_ids):
+        print(f"Warning: File has {audio.shape[0]} channels but filename specifies {len(channel_ids)} channels")
+        return []
+    
+    # Write only the missing channel files
+    for channel_num, channel_id in missing_channels:
+        if channel_num >= audio.shape[0]:
+            print(f"Warning: Channel {channel_num} requested but file only has {audio.shape[0]} channels")
+            continue
+            
+        # Create filename for this channel
+        channel_filename = f"{timestamp}-{channel_id}.wav"
+        channel_path = temp_dir / channel_filename
+        
+        # Write the channel data to a new file
+        sf.write(str(channel_path), audio[channel_num], sr)
+        
+        channel_files.append((channel_num, channel_path, channel_id))
+    
+    # Sort by channel number to maintain order
+    channel_files.sort(key=lambda x: x[0])
+    return channel_files
 
 def should_process_file(wav_file: Path, output_dir: str, plot_spec_results: bool) -> bool:
     """
@@ -147,92 +225,89 @@ def process_wav_files(model_path: str = None, json_list_path: str = None):
         print(f"No wav files found")
         return
     
-    # First pass to count files that need processing
-    files_to_process = []
-    for wav_file in wav_files:
-        if should_process_file(wav_file, str(wav_file.parent), True):
-            files_to_process.append(wav_file)
-    
-    if not files_to_process:
-        print("No files need processing - all outputs exist.")
-        return
-        
-    print(f"\nWill process {len(files_to_process)} files")
-    print(f"Skipping {len(wav_files) - len(files_to_process)} files (outputs already exist)")
-    
-    # Process files with progress bar
+    # Process each WAV file
     start_time = time.time()
     processing_times = []
+    total_channels_processed = 0
     
-    with tqdm(total=len(files_to_process), desc="Processing files") as pbar:
-        for wav_file in files_to_process:
-            try:
-                # Get the directory containing the wav file
-                output_dir = str(wav_file.parent)
-                file_size_mb = wav_file.stat().st_size / (1024 * 1024)  # File size in MB
-                
-                print(f"\nProcessing: {wav_file}")
-                print(f"File size: {file_size_mb:.2f} MB")
-                print(f"Output directory: {output_dir}")
-                
-                file_start_time = time.time()
-                progress_tracker = FileProgressTracker()
-                
-                # Initialize the inference object for this file
-                progress_tracker.start_step("Initializing")
-                sorter = Inference(
-                    input_path=str(wav_file),
-                    output_path=output_dir,
-                    model_path=model_path,
-                    plot_spec_results=True,  # Generate spectrograms
-                    create_json=True,        # Create JSON output
-                    separate_json=True,      # Create separate JSON for each file
-                    threshold=0.5,           # Default threshold
-                    min_length=500,          # Minimum segment length (ms)
-                    pad_song=50,            # Padding around segments (ms)
-                    progress_callback=progress_tracker.update_step  # Add progress tracking
-                )
-                progress_tracker.finish_step()
-                
-                # Process the file
-                progress_tracker.start_step("Processing audio")
-                result = sorter.sort_single_song(str(wav_file))
-                progress_tracker.finish_step()
-                
-                # Calculate processing time and speed
-                processing_time = time.time() - file_start_time
-                processing_times.append(processing_time)
-                speed_mbps = file_size_mb / processing_time
-                
-                # Calculate statistics
-                avg_time = sum(processing_times) / len(processing_times)
-                remaining_files = len(files_to_process) - len(processing_times)
-                est_remaining_time = remaining_files * avg_time
-                
-                print(f"Processing time: {format_time(processing_time)} ({speed_mbps:.2f} MB/s)")
-                print(f"Average processing time: {format_time(avg_time)}")
-                if remaining_files > 0:
-                    print(f"Estimated time remaining: {format_time(est_remaining_time)}")
-                
-                if result is None:
-                    print(f"Successfully processed {wav_file}")
-                else:
-                    print(f"Warning: Unexpected result while processing {wav_file}")
-                    
-                pbar.update(1)
-                
-            except Exception as e:
-                print(f"Error processing {wav_file}: {str(e)}")
+    for wav_file in tqdm(wav_files, desc="Processing files"):
+        try:
+            print(f"\nProcessing multi-channel file: {wav_file}")
+            
+            # Split the channels
+            channel_files = split_wav_channels(wav_file)
+            if not channel_files:
+                print(f"Warning: No channels extracted from {wav_file}")
                 continue
+            
+            print(f"Processing {len(channel_files)} channels")
+            
+            # Process each channel
+            for channel_num, channel_path, channel_id in channel_files:
+                try:
+                    output_dir = str(wav_file.parent)
+                    file_size_mb = channel_path.stat().st_size / (1024 * 1024)
+                    
+                    print(f"\nProcessing channel {channel_num} ({channel_id})")
+                    print(f"File size: {file_size_mb:.2f} MB")
+                    print(f"Output directory: {output_dir}")
+                    
+                    if not should_process_file(channel_path, output_dir, True):
+                        continue
+                    
+                    file_start_time = time.time()
+                    progress_tracker = FileProgressTracker()
+                    
+                    # Initialize the inference object for this channel
+                    progress_tracker.start_step("Initializing")
+                    sorter = Inference(
+                        input_path=str(channel_path),
+                        output_path=output_dir,
+                        model_path=model_path,
+                        plot_spec_results=True,
+                        create_json=True,
+                        separate_json=True,
+                        threshold=0.5,
+                        min_length=500,
+                        pad_song=50,
+                        progress_callback=progress_tracker.update_step
+                    )
+                    progress_tracker.finish_step()
+                    
+                    # Process the channel
+                    progress_tracker.start_step(f"Processing channel {channel_id}")
+                    result = sorter.sort_single_song(str(channel_path))
+                    progress_tracker.finish_step()
+                    
+                    # Calculate processing time and speed
+                    processing_time = time.time() - file_start_time
+                    processing_times.append(processing_time)
+                    speed_mbps = file_size_mb / processing_time
+                    
+                    print(f"Processing time: {format_time(processing_time)} ({speed_mbps:.2f} MB/s)")
+                    
+                    if result is None:
+                        print(f"Successfully processed channel {channel_id}")
+                        total_channels_processed += 1
+                    else:
+                        print(f"Warning: Unexpected result while processing channel {channel_id}")
+                    
+                except Exception as e:
+                    print(f"Error processing channel {channel_id}: {str(e)}")
+                    continue
+                
+        except Exception as e:
+            print(f"Error processing {wav_file}: {str(e)}")
+            continue
     
     total_time = time.time() - start_time
-    avg_time_per_file = total_time / len(files_to_process)
     
     print("\nProcessing Summary:")
     print(f"Total processing time: {format_time(total_time)}")
-    print(f"Average time per file: {format_time(avg_time_per_file)}")
-    print(f"Files processed: {len(files_to_process)}")
-    print(f"Files skipped: {len(wav_files) - len(files_to_process)}")
+    if processing_times:
+        avg_time = sum(processing_times) / len(processing_times)
+        print(f"Average time per channel: {format_time(avg_time)}")
+    print(f"Total channels processed: {total_channels_processed}")
 
 def main():
     parser = argparse.ArgumentParser(description="Process wav files recursively using TweetyNet")
