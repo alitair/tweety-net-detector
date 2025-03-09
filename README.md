@@ -24,8 +24,8 @@ A Python tool for detecting and analyzing bird songs in WAV files using the Twee
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/YOUR_USERNAME/tweety-net-song-detector.git
-cd tweety-net-song-detector
+git clone https://github.com/alitair/tweety-net-detector.git
+cd tweety-net-detector
 ```
 
 2. Install dependencies:
