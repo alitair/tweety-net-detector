@@ -114,14 +114,9 @@ def should_process_file(wav_file: Path, output_dir: str, plot_spec_results: bool
     """
     wav_name = wav_file.stem
     json_path = Path(output_dir) / f"{wav_file.name}_results.json"
-    spec_path = Path(output_dir) / "specs" / f"{wav_file.name}_detection.png"
     
     # If JSON file doesn't exist, we need to process
     if not json_path.exists():
-        return True
-        
-    # If spectrograms are required and the spectrogram doesn't exist, we need to process
-    if plot_spec_results and not spec_path.exists():
         return True
         
     print(f"Skipping {wav_file.name} - output files already exist")
@@ -225,6 +220,22 @@ def process_wav_files(model_path: str = None, json_list_path: str = None):
         print(f"No wav files found")
         return
     
+    # Create a single Inference object to reuse for all files
+    print("\nInitializing TweetyNet model...")
+    sorter = Inference(
+        input_path="",  # Will be set for each file
+        output_path="",  # Will be set for each file
+        model_path=model_path,
+        plot_spec_results=False,  # Disable spectrogram generation
+        create_json=True,
+        separate_json=True,
+        threshold=0.5,
+        min_length=500,
+        pad_song=50,
+        progress_callback=None  # Will be set for each file
+    )
+    print("Model initialized successfully")
+    
     # Process each WAV file
     start_time = time.time()
     processing_times = []
@@ -252,27 +263,16 @@ def process_wav_files(model_path: str = None, json_list_path: str = None):
                     print(f"File size: {file_size_mb:.2f} MB")
                     print(f"Output directory: {output_dir}")
                     
-                    if not should_process_file(channel_path, output_dir, True):
+                    if not should_process_file(channel_path, output_dir, False):
                         continue
                     
                     file_start_time = time.time()
                     progress_tracker = FileProgressTracker()
                     
-                    # Initialize the inference object for this channel
-                    progress_tracker.start_step("Initializing")
-                    sorter = Inference(
-                        input_path=str(channel_path),
-                        output_path=output_dir,
-                        model_path=model_path,
-                        plot_spec_results=True,
-                        create_json=True,
-                        separate_json=True,
-                        threshold=0.5,
-                        min_length=500,
-                        pad_song=50,
-                        progress_callback=progress_tracker.update_step
-                    )
-                    progress_tracker.finish_step()
+                    # Update paths and callback for this channel
+                    sorter.input_path = str(channel_path)
+                    sorter.output_path = output_dir
+                    sorter.progress_callback = progress_tracker.update_step
                     
                     # Process the channel
                     progress_tracker.start_step(f"Processing channel {channel_id}")
