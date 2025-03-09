@@ -14,9 +14,9 @@ from scipy.io import wavfile
 from scipy.signal import ellip, filtfilt, spectrogram, windows
 from tqdm import tqdm
 
-from spectogram_generator import WavtoSpec
-from utils import load_model
-import post_processing
+from src.spectogram_generator import WavtoSpec
+from src.utils import load_model
+import src.post_processing as post_processing
 import warnings
 
 warnings.filterwarnings("ignore")  # Suppress warnings for cleaner output
@@ -47,7 +47,8 @@ class Inference:
         separate_json: bool = False,
         step_size: int = 119,
         nfft: int = 1024,
-        dump_interval: int = 1000  # New parameter with default value
+        dump_interval: int = 1000,  # New parameter with default value
+        progress_callback = None  # Add progress callback
     ):
         self.input_path = input_path
         self.output_path = output_path if output_path else get_default_output_path()
@@ -59,7 +60,8 @@ class Inference:
         self.separate_json = separate_json
         self.step_size = step_size
         self.nfft = nfft
-        self.dump_interval = dump_interval  # Initialize the new parameter
+        self.dump_interval = dump_interval
+        self.progress_callback = progress_callback
 
         self.device = torch.device("cpu") if aws_mode else torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -140,6 +142,9 @@ class Inference:
             print(f"Final results saved to {self.json_path}")
 
     def sort_single_song(self, song_path: str, return_json: bool = False) -> Optional[str]:
+        if self.progress_callback:
+            self.progress_callback(0, 100, "Starting spectrogram generation")
+            
         wav_to_spec = WavtoSpec(
             src_dir=None,
             dst_dir=None,
@@ -154,10 +159,16 @@ class Inference:
             print(f"Skipping {song_name}, unable to generate spectrogram.")
             return None
 
+        if self.progress_callback:
+            self.progress_callback(20, 100, "Loading audio file")
+
         sample_rate, wavfile_signal = wavfile.read(song_path)
         spec_mean = spec.mean()
         spec_std = spec.std()
         spec_normalized = (spec - spec_mean) / spec_std
+
+        if self.progress_callback:
+            self.progress_callback(40, 100, "Running model inference")
 
         with torch.no_grad():
             predictions = post_processing.process_spectrogram(
@@ -167,6 +178,9 @@ class Inference:
                 max_length=self.context_size
             )
 
+        if self.progress_callback:
+            self.progress_callback(60, 100, "Post-processing")
+
         smoothed_song = post_processing.moving_average(predictions, window_size=100)
         processed_song = post_processing.post_process_segments(
             smoothed_song,
@@ -174,6 +188,9 @@ class Inference:
             pad_song=self.pad_song,
             threshold=self.threshold
         )
+
+        if self.progress_callback:
+            self.progress_callback(80, 100, "Generating output")
 
         song_status = (processed_song > self.threshold).astype(int)
         wav_length_ms = (len(wavfile_signal) / sample_rate) * 1000
@@ -211,6 +228,9 @@ class Inference:
                     self.update_json(onsets_offsets, song_name, json_data["spec_parameters"])
 
         if self.plot_spec_results:
+            if self.progress_callback:
+                self.progress_callback(90, 100, "Generating spectrogram plot")
+                
             post_processing.plot_spectrogram_with_processed_song(
                 file_name=song_name,
                 spectrogram=spec_normalized,
@@ -218,6 +238,9 @@ class Inference:
                 processed_song=processed_song,
                 directory=os.path.join(self.output_path, 'specs')
             )
+
+        if self.progress_callback:
+            self.progress_callback(100, 100, "Complete")
 
         print(f"Processed {song_name}")
         return None

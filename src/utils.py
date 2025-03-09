@@ -1,7 +1,7 @@
 import torch 
 import json
 import os 
-from model import TweetyNet
+from src.model import TweetyNet
 
 def load_weights(dir, model, map_location):
     """
