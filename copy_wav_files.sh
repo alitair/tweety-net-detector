@@ -7,8 +7,9 @@ if [ "$#" -ne 2 ]; then
     exit 1
 fi
 
-SOURCE_DIR="$1"
-DEST_DIR="$2"
+# Remove any trailing slashes from the paths
+SOURCE_DIR="${1%/}"
+DEST_DIR="${2%/}"
 
 # Check if source directory exists
 if [ ! -d "$SOURCE_DIR" ]; then
