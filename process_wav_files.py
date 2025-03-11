@@ -22,6 +22,8 @@ def split_wav_channels(wav_file: Path) -> list:
     Returns:
         list: List of (channel_number, channel_path, channel_id) tuples
     """
+    print(f"\nProcessing multi-channel file: {wav_file}")
+    
     # Parse the filename to get timestamp and channel IDs
     filename = wav_file.stem
     parts = filename.split('-')
@@ -31,6 +33,7 @@ def split_wav_channels(wav_file: Path) -> list:
         
     timestamp = parts[0]
     channel_ids = parts[1:]  # List of channel IDs
+    print(f"Found channels: {channel_ids}")
     
     channel_files = []
     existing_channels = []
@@ -41,21 +44,28 @@ def split_wav_channels(wav_file: Path) -> list:
         channel_filename = f"{timestamp}-{channel_id}.wav"
         channel_path = wav_file.parent / channel_filename
         if channel_path.exists():
+            print(f"Found existing channel file: {channel_path}")
             channel_files.append((i, channel_path, channel_id))
             existing_channels.append(channel_id)
         else:
+            print(f"Channel file missing: {channel_path}")
             missing_channels.append((i, channel_id))
     
     # If all channels exist, return them
     if len(existing_channels) == len(channel_ids):
+        print("All channel files exist, no splitting needed")
         return channel_files
     
     # If some channels are missing, we need to read and split the audio
     if missing_channels:
+        print(f"Need to create files for channels: {[id for _, id in missing_channels]}")
         # Read the multi-channel audio
+        print(f"Loading multi-channel audio from {wav_file}")
         audio, sr = librosa.load(wav_file, sr=None, mono=False)
         if len(audio.shape) == 1:
             audio = audio.reshape(1, -1)  # Convert mono to shape (1, samples)
+        
+        print(f"Loaded audio with shape: {audio.shape}, sample rate: {sr}")
         
         # Verify we have enough channels in the audio file
         if audio.shape[0] < len(channel_ids):
@@ -73,8 +83,15 @@ def split_wav_channels(wav_file: Path) -> list:
             channel_path = wav_file.parent / channel_filename
             
             # Write the channel data to a new file
+            print(f"Writing channel {channel_id} to {channel_path}")
             sf.write(str(channel_path), audio[channel_num], sr)
-            channel_files.append((channel_num, channel_path, channel_id))
+            
+            # Verify the file was written
+            if channel_path.exists():
+                print(f"Successfully wrote {channel_path}")
+                channel_files.append((channel_num, channel_path, channel_id))
+            else:
+                print(f"ERROR: Failed to write {channel_path}")
     
     # Sort by channel number to maintain order
     channel_files.sort(key=lambda x: x[0])
