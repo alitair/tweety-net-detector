@@ -22,8 +22,12 @@ def split_wav_channels(wav_file: Path) -> list:
     Returns:
         list: List of (channel_number, channel_path, channel_id) tuples
     """
-    print(f"\nProcessing multi-channel file: {wav_file}")
-    
+    # First check if results already exist for this file
+    results_json = wav_file.parent / f"{wav_file.name}_results.json"
+    if results_json.exists():
+        print(f"Skipping {wav_file.name} - results already exist")
+        return []
+
     # Parse the filename to get timestamp and channel IDs
     filename = wav_file.stem
     parts = filename.split('-')
@@ -33,7 +37,6 @@ def split_wav_channels(wav_file: Path) -> list:
         
     timestamp = parts[0]
     channel_ids = parts[1:]  # List of channel IDs
-    print(f"Found channels: {channel_ids}")
     
     channel_files = []
     existing_channels = []
@@ -44,28 +47,21 @@ def split_wav_channels(wav_file: Path) -> list:
         channel_filename = f"{timestamp}-{channel_id}.wav"
         channel_path = wav_file.parent / channel_filename
         if channel_path.exists():
-            print(f"Found existing channel file: {channel_path}")
             channel_files.append((i, channel_path, channel_id))
             existing_channels.append(channel_id)
         else:
-            print(f"Channel file missing: {channel_path}")
             missing_channels.append((i, channel_id))
     
     # If all channels exist, return them
     if len(existing_channels) == len(channel_ids):
-        print("All channel files exist, no splitting needed")
         return channel_files
     
     # If some channels are missing, we need to read and split the audio
     if missing_channels:
-        print(f"Need to create files for channels: {[id for _, id in missing_channels]}")
         # Read the multi-channel audio
-        print(f"Loading multi-channel audio from {wav_file}")
         audio, sr = librosa.load(wav_file, sr=None, mono=False)
         if len(audio.shape) == 1:
             audio = audio.reshape(1, -1)  # Convert mono to shape (1, samples)
-        
-        print(f"Loaded audio with shape: {audio.shape}, sample rate: {sr}")
         
         # Verify we have enough channels in the audio file
         if audio.shape[0] < len(channel_ids):
@@ -82,34 +78,35 @@ def split_wav_channels(wav_file: Path) -> list:
             channel_filename = f"{timestamp}-{channel_id}.wav"
             channel_path = wav_file.parent / channel_filename
             
-            # Write the channel data to a new file
-            print(f"Writing channel {channel_id} to {channel_path}")
-            sf.write(str(channel_path), audio[channel_num], sr)
-            
-            # Verify the file was written
-            if channel_path.exists():
-                print(f"Successfully wrote {channel_path}")
-                channel_files.append((channel_num, channel_path, channel_id))
-            else:
-                print(f"ERROR: Failed to write {channel_path}")
+            try:
+                # Write the channel data to a new file
+                sf.write(str(channel_path), audio[channel_num], sr)
+                
+                # Verify the file was written
+                if channel_path.exists():
+                    channel_files.append((channel_num, channel_path, channel_id))
+                else:
+                    print(f"ERROR: Failed to write {channel_path}")
+            except Exception as e:
+                print(f"Error writing channel {channel_id}: {str(e)}")
+                continue
     
     # Sort by channel number to maintain order
     channel_files.sort(key=lambda x: x[0])
     return channel_files
 
-def should_process_file(wav_file: Path, output_dir: str) -> bool:
+def should_process_file(wav_file: Path) -> bool:
     """
     Check if a wav file needs to be processed by checking for existing output files.
     
     Args:
         wav_file (Path): Path to the wav file
-        output_dir (str): Output directory path
         
     Returns:
         bool: True if the file needs processing, False if outputs already exist
     """
-    json_path = Path(output_dir) / f"{wav_file.name}_results.json"
-    return not json_path.exists()
+    results_json = wav_file.parent / f"{wav_file.name}_results.json"
+    return not results_json.exists()
 
 def process_wav_files(model_path: str = None, json_list_path: str = None):
     """
@@ -158,6 +155,11 @@ def process_wav_files(model_path: str = None, json_list_path: str = None):
     # Process each WAV file
     for wav_file in wav_files:
         try:
+            # Check if results already exist
+            if not should_process_file(wav_file):
+                print(f"Skipping {wav_file.name} - results already exist")
+                continue
+
             # First check if any channels need processing
             filename = wav_file.stem
             parts = filename.split('-')
@@ -173,12 +175,12 @@ def process_wav_files(model_path: str = None, json_list_path: str = None):
             for channel_id in channel_ids:
                 channel_filename = f"{timestamp}-{channel_id}.wav"
                 channel_path = wav_file.parent / channel_filename
-                if not should_process_file(channel_path, str(wav_file.parent)):
-                    print(f"Skipping {channel_path.name} - already processed")
-                else:
+                if should_process_file(channel_path):
                     all_processed = False
+                    break
             
             if all_processed:
+                print(f"Skipping {wav_file.name} - all channels already processed")
                 continue
             
             # Only split channels if we need to process at least one
@@ -191,7 +193,8 @@ def process_wav_files(model_path: str = None, json_list_path: str = None):
                 try:
                     output_dir = str(wav_file.parent)
                     
-                    if not should_process_file(channel_path, output_dir):
+                    if not should_process_file(channel_path):
+                        print(f"Skipping {channel_path.name} - results already exist")
                         continue
                     
                     print(f"Processing {channel_path.name}")
